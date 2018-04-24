@@ -1,28 +1,32 @@
 # -*- coding: utf-8 -*-
 # ORM ( Object Relational Mapping, 对象关系映射）
 # http://www.cnblogs.com/weixia-blog/p/7257528.html
+# https://github.com/zhouxinkai/awesome-python3-webapp/blob/master/www/orm.py
 import logging
 import asyncio
 import aiomysql
 
-def log(sql,args==()):
+def log(sql,args=()):
     logging.info('SQL: %s' % sql)
 
 # Create connect pool
 # Parameter: host,port,user,password,db,charset,autocommit
 #            maxsize,minsize,loop
 async def create_pool( loop, **kw):
+    # 创建全局数据连接对象
     logging.info('create database connection pool...')
     global __pool
     # 连接池由全局变量__pool存储，缺省情况下将编码设置为utf-8,自动提交事务
-    __pool = awaite aiomysql.create_pool(
-        host = kw.get('host':'location'),
+    __pool = await aiomysql.create_pool(
+        host = kw.get('host','location'),
         port = kw.get('port',3306),
         user = kw['user'],
-        password = kw['db'],
-        charset = kw.get('charset','utf-8'),
-        autocommit = kw.get('maxsize',10),
-        minisize = kw.get('minisize',1),
+        password = kw['password'],
+        db=kw['database'],
+        charset = kw.get('charset','utf8'),
+        autocommit = kw.get( 'autocommit',True),
+        maxsize=kw.get('maxsize', 10),
+        minsize = kw.get('minisize',1),
         loop = loop
     )
 
@@ -42,6 +46,7 @@ async def select(sql, args, size =None):
                 rs = await cur.fetchmany(size)
             else:
                 rs = await cur.fetchall()
+                # 取得所有行的数据，作为列表返回，一行数据是一个字典
         logging.info('rows returned: %s' % len(rs))
         return rs
 
@@ -94,18 +99,26 @@ class FloatField(Field):
     def __init__(self,name = None, primary_key = False, default = 0.0):
         super().__init__(name,'real',primary_key,default)
 
+class IntegerField(Field):
+
+    def __init__(self, name=None, primary_key=False, default=0):
+        super().__init__(name, 'bigint', primary_key, default)
+
 class TextField(Field):
 
     def __init__(self,name = None, default = None):
-        super().__init__(name.'text',False,default)
+        super().__init__(name,'text',False,default)
 
 class ModelMetaclass(type):
 
     def __new__(cls, name, bases, attrs):
+        # 排除Model类本身
         if name == 'Model':
             return type.__new__(cls, name, bases, attrs)
+        # 获取table名称
         tableName = attrs.get('__table__', None) or name
         logging.info('found model: %s (table: %s)' % (name, tableName))
+        # 获取所有的Field和主键名
         mappings = dict()
         fields = []
         primaryKey = None
@@ -116,12 +129,12 @@ class ModelMetaclass(type):
                 if v.primary_key:
                     # 找到主键:
                     if primaryKey:
-                        raise StandardError('Duplicate primary key for field: %s' % k)
+                        print('Duplicate primary key for field: %s' % k)
                     primaryKey = k
                 else:
                     fields.append(k)
         if not primaryKey:
-            raise StandardError('Primary key not found.')
+            print('Primary key not found.')
         for k in mappings.keys():
             attrs.pop(k)
         escaped_fields = list(map(lambda f: '`%s`' % f, fields))
@@ -130,8 +143,10 @@ class ModelMetaclass(type):
         attrs['__primary_key__'] = primaryKey  # 主键属性名
         attrs['__fields__'] = fields  # 除主键外的属性名
         attrs['__select__'] = 'select `%s`, %s from `%s`' % (primaryKey, ', '.join(escaped_fields), tableName)
+
         attrs['__insert__'] = 'insert into `%s` (%s, `%s`) values (%s)' % (
         tableName, ', '.join(escaped_fields), primaryKey, create_args_string(len(escaped_fields) + 1))
+
         attrs['__update__'] = 'update `%s` set %s where `%s`=?' % (
         tableName, ', '.join(map(lambda f: '`%s`=?' % (mappings.get(f).name or f), fields)), primaryKey)
         attrs['__delete__'] = 'delete from `%s` where `%s`=?' % (tableName, primaryKey)
@@ -165,34 +180,34 @@ class Model(dict, metaclass=ModelMetaclass):
                 setattr(self, key, value)
         return value
 
-@classmethod
-async def findAll(cls, where=None, args=None, **kw):
-    ' find objects by where clause. '
-    sql = [cls.__select__]
-    if where:
-        sql.append('where')
-        sql.append(where)
-    if args is None:
-        args = []
-    orderBy = kw.get('orderBy', None)
-    if orderBy:
-        sql.append('order by')
-        sql.append(orderBy)
-    limit = kw.get('limit', None)
-    if limit is not None:
-        sql.append('limit')
-        if isinstance(limit, int):
-            sql.append('?')
-            args.append(limit)
-        elif isinstance(limit, tuple) and len(limit) == 2:
-            sql.append('?, ?')
-            args.extend(limit)
-        else:
-            raise ValueError('Invalid limit value: %s' % str(limit))
-    rs = await select(' '.join(sql), args)
-    return [cls(**r) for r in rs]
+    @classmethod
+    async def findAll(cls, where=None, args=None, **kw):
+        ' find objects by where clause. '
+        sql = [cls.__select__]
+        if where:
+            sql.append('where')
+            sql.append(where)
+        if args is None:
+            args = []
+        orderBy = kw.get('orderBy', None)
+        if orderBy:
+            sql.append('order by')
+            sql.append(orderBy)
+        limit = kw.get('limit', None)
+        if limit is not None:
+            sql.append('limit')
+            if isinstance(limit, int):
+                sql.append('?')
+                args.append(limit)
+            elif isinstance(limit, tuple) and len(limit) == 2:
+                sql.append('?, ?')
+                args.extend(limit)
+            else:
+                raise ValueError('Invalid limit value: %s' % str(limit))
+        rs = await select(' '.join(sql), args)
+        return [cls(**r) for r in rs]
 
- @classmethod
+    @classmethod
     async def findNumber(cls, selectField, where=None, args=None):
         ' find number by select and where. '
         sql = ['select %s _num_ from `%s`' % (selectField, cls.__table__)]
@@ -204,30 +219,45 @@ async def findAll(cls, where=None, args=None, **kw):
             return None
         return rs[0]['_num_']
 
-@classmethod
-async def find(cls, pk):
-    ' find object by primary key. '
-    rs = await select('%s where `%s`=?' % (cls.__select__, cls.__primary_key__), [pk], 1)
-    if len(rs) == 0:
-        return None
-    return cls(**rs[0])
+    @classmethod
+    async def find(cls, pk):
+        ' find object by primary key. '
+        rs = await select('%s where `%s`=?' % (cls.__select__, cls.__primary_key__), [pk], 1)
+        if len(rs) == 0:
+            return None
+        return cls(**rs[0])
 
-async def save(self):
-    args = list(map(self.getValueOrDefault, self.__fields__))
-    args.append(self.getValueOrDefault(self.__primary_key__))
-    rows = await execute(self.__insert__, args)
-    if rows != 1:
-        logging.info('failed to insert record: affected rows: %s' % rows)
+    async def save(self):
+        args = list(map(self.getValueOrDefault, self.__fields__))
+        args.append(self.getValueOrDefault(self.__primary_key__))
+        rows = await execute(self.__insert__, args)
+        if rows != 1:
+            logging.info('failed to insert record: affected rows: %s' % rows)
 
-async def update(self):
-    args = list(map(self.getValue, self.__fields__))
-    args.append(self.getValue(self.__primary_key__))
-    rows = await execute(self.__update__, args)
-    if rows != 1:
-        logging.info('failed to update by primary key: affected rows: %s' % rows)
+    async def update(self):
+        args = list(map(self.getValue, self.__fields__))
+        args.append(self.getValue(self.__primary_key__))
+        rows = await execute(self.__update__, args)
+        if rows != 1:
+            logging.info('failed to update by primary key: affected rows: %s' % rows)
 
-async def remove(self):
-    args = [self.getValue(self.__primary_key__)]
-    rows = await execute(self.__delete__, args)
-    if rows != 1:
-        logging.info('failed to remove by primary key: affected rows: %s' % rows)
+    async def remove(self):
+        args = [self.getValue(self.__primary_key__)]
+        rows = await execute(self.__delete__, args)
+        if rows != 1:
+            logging.info('failed to remove by primary key: affected rows: %s' % rows)
+
+
+
+#test code
+class User(Model):
+    __table__ = 'users'
+
+    id = IntegerField(primary_key=True)
+    name = StringField()
+    def __init__(self, **kw):
+        super(User, self).__init__(**kw)
+
+u = User(id=12345, name='Michael')
+#instance(u, dict)=True,u是一个字典
+u.save()
